@@ -19,7 +19,7 @@ from PIL import Image
 import io
 
 # --- Configuration ---
-WEBHOOK_URL = "https://discord.com/api/webhooks/1546874268149620806/GqZUiOIUuBrvSpPaEDskbdCt6yEijqlI82Ys1YtAjv818kkywiI9Pl6bCnUX5xPJ8vbp"  # Replace with your webhook
+WEBHOOK_URL = ""  # Replace with your webhook
 
 def ensure_dependencies():
     """Install missing dependencies."""
